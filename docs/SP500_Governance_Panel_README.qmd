@@ -1,0 +1,134 @@
+---
+title: S&P 500 Governance and Financial Panel Dataset
+author: Barry
+format: html
+embed-resources: true
+---
+## Overview
+This project constructs a structured firm-year panel of S&P 500 companies from 2003 to 2023, integrating board diversity, financial performance, and ESG disclosures from WRDS and third-party sources. It is designed to support empirical research in corporate governance, ESG, and board diversity.
+
+### Data Sources:
+- **BoardEx (North America)**: Director-level demographics and board service data
+- **Compustat (Fundamentals Annual)**: Financial accounting and market-based metrics
+- **Refinitiv & Bloomberg**: ESG scores and historical S&P 500 membership
+- **WRDS Cloud**: PostgreSQL backends and Python JupyterHub for computation
+
+---
+
+## Key Files
+
+### ✅ `master_panel_deduplicated.csv`
+**Final merged and deduplicated panel** with one row per firm-year. This is the primary dataset for analysis, missingness diagnostics, and regression modelling.
+
+#### Core Variables
+| Variable                        | Description                                                  |
+|----------------------------------|--------------------------------------------------------------|
+| `gvkey`, `ticker`, `conm`        | Compustat identifiers and company metadata                   |
+| `fiscal_year`                    | Fiscal year (used for merging and aggregation)               |
+| `numberdirectors`               | Board size (BoardEx, from annual report)                     |
+| `pct_female_directors`          | Fraction of female directors (BoardEx-derived)               |
+| `estimated_num_female_directors`| Approximated count of women on board                         |
+| `avg_age`, `stdev_age`          | Age statistics for board directors                           |
+| `tobins_q`, `roa`, `liquidity_ratio`, `leverage_ratio` | Financial ratios (Compustat)     |
+| `ref_ESGScore`, `bbg_SOCIAL_SCORE` | ESG scores from Refinitiv and Bloomberg                    |
+
+---
+
+### 📄 `sp500_panel_with_diversity.csv`
+**Intermediate file**: contains governance and financial variables prior to merging with Bloomberg and Refinitiv ESG data.
+
+### 📄 `director_level_data_filtered.csv`
+Director-year-level data filtered from BoardEx, used to compute firm-level diversity stats.
+
+### 📄 `boardex_director_diversity_by_company_year.csv`
+Intermediate file: company-year aggregates of gender and age diversity from BoardEx.
+
+---
+
+## Construction Workflow
+
+### `wrds_sp500_data.qmd`
+A **Quarto notebook** orchestrating the initial pipeline:
+1. Extracts and cleans BoardEx director data
+2. Joins Compustat financials by `gvkey` and fiscal year
+3. Filters companies by point-in-time S&P 500 membership
+4. Outputs `sp500_panel_full_with_diversity.csv` as an intermediate dataset
+
+### `merge_with_refinitiv_bloomberg.py`
+A **Python script** for final panel construction:
+- Reads `sp500_panel_full_with_diversity.csv`
+- Merges Bloomberg and Refinitiv ESG data
+- Deduplicates based on `gvkey` and `fiscal_year`
+- Outputs **`master_panel_deduplicated.csv`** as the final panel
+
+---
+
+## Time Coverage
+- **Years**: 2003–2023 (only  for wrds data)
+- **Universe**: S&P 500 constituents at each year-end (via Refinitiv/Bloomberg)
+
+---
+
+## Sample Size
+- Over 12,000 unique firm-year observations (only for wrds data)
+- One row per `(gvkey, fiscal_year)`
+- Restricted to S&P 500 members during each fiscal year
+
+---
+
+## Missing Data and Regression Inputs
+
+A key concern in panel-based empirical research is variable completeness across firm-years. The final dataset, `master_panel_deduplicated.csv`, integrates financial, governance, and ESG indicators, with varying coverage by source.
+
+To aid transparency, we conducted a targeted missingness analysis for **regression-relevant variables**, including:
+
+- Tobin’s Q (multiple sources)
+- Liquidity and leverage ratios
+- Board gender diversity
+- ESG summary scores
+
+### 📊 Missingness Matrix: Regression Inputs
+
+![](data/regression_vars_missing_matrix.png)
+
+> **White lines = present data**, **Black lines = missing data** across 1,000 random observations (rows) and 22 key variables (columns).
+
+**Columns are rotated** for readability and include variables like:
+
+- `ref_TobinsQ`, `wrds_tobins_q`, `bbg_TOBIN_Q`
+- `ref_ROATotalAssetsPercent`, `wrds_roa`
+
+- `wrds_pct_female_directors`, `bbg_PCT_WOMEN`, `ref_FemaleonBoard`
+
+- ESG scores: `ref_ESGScore`, `bbg_ESG_SCORE`, `ref_ESGControversiesScore`
+
+This visual highlights:
+
+- Good coverage from **Refinitiv** and **WRDS (Compustat)** for core financials
+
+- Sparse coverage from **Bloomberg**, especially on board metrics and ESG disclosures
+
+- Some redundancy across data providers (e.g. Tobin’s Q from WRDS, Refinitiv, Bloomberg)
+
+---
+
+### Summary: Variable Coverage for Regression
+
+| Type           | Fields (examples)                                       | Coverage         |
+|----------------|---------------------------------------------------------|------------------|
+| **High**       | `ref_TobinsQ`, `ref_ROATotalAssetsPercent`, `ref_LeverageRatio`, `wrds_pct_female_directors`, `numberdirectors` | ✅ Broad coverage |
+| **Moderate**   | `wrds_tobins_q`, `wrds_roa`, `wrds_leverage_ratio`, `avg_age`, `stdev_age`                      | ⚠ Some gaps      |
+| **Low**        | Bloomberg ESG metrics (e.g. `bbg_PCT_WOMEN`, `bbg_ESG_SCORE`)                          | ❌ Sparse         |
+
+---
+
+## Dependencies
+
+Built using WRDS Cloud JupyterHub with:
+
+- Python: `wrds`, `pandas`, `datetime`, `pyarrow`
+- Notebook: `Quarto` (`wrds_sp500_data.qmd`)
+- Merge script: `merge_with_refinitiv_bloomberg.py`
+- Visualisation: `missingno`, `matplotlib`
+
+---
