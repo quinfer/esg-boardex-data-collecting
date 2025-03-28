@@ -1,0 +1,7 @@
+Final panel rows: 38066
+Bloomberg rows: 2457
+Refinitiv rows: 3697
+Rows with missing Bloomberg data: 29370
+Rows with missing Refinitiv data: 30539
+Match rate for Bloomberg: 22.93%
+Match rate for Refinitiv: 29.54%

@@ -1,0 +1,172 @@
+---
+title: "S&P 500 Governance and Fundamentals Panel with BoardEx Integration"
+format: html
+jupyter: regression_env
+---
+
+::: {.callout-note title="Notebook Summary"}
+This Quarto notebook constructs a reproducible 20-year panel of S&P 500 companies using point-in-time data from Refinitiv, Compustat, and BoardEx via the WRDS Cloud JupyterHub. The panel includes financial metrics, governance attributes, and director-level diversity indicators.
+:::
+
+## Setup and Refinitiv Universe
+
+``` python
+import wrds
+import pandas as pd
+import json
+from datetime import datetime
+
+# Connect to WRDS
+db = wrds.Connection()
+
+# Load Refinitiv tickers (point-in-time universe)
+with open("/mnt/data/refinitiv_unique_tickers.json", "r") as f:
+    refinitiv_tickers = set(t.upper() for t in json.load(f)["tickers"])
+```
+
+## Step 1: Link BoardEx and Compustat
+
+``` python
+link_table = db.raw_sql("""
+    SELECT DISTINCT companyid, gvkey, permco
+    FROM wrdsapps_link_crsp_comp_bdx.bdxcrspcomplink
+    WHERE gvkey IS NOT NULL AND permco IS NOT NULL AND preferred = 1 AND duplicate = 0
+""")
+```
+
+## Step 2: Get Compustat Company Tickers
+
+``` python
+compustat_info = db.raw_sql("""
+    SELECT gvkey, iid, tic AS ticker
+    FROM comp.security
+    WHERE iid = '01'
+""")
+compustat_info["ticker"] = compustat_info["ticker"].str.upper()
+compustat_info = compustat_info[compustat_info["ticker"].isin(refinitiv_tickers)]
+
+link_table = link_table.merge(compustat_info, on="gvkey", how="inner")
+```
+
+## Step 3: BoardEx Board Characteristics
+
+``` python
+boardex = db.raw_sql("""
+    SELECT boardid AS companyid, annualreportdate, numberdirectors, genderratio, stdevage
+    FROM boardex.na_board_characteristics
+    WHERE numberdirectors IS NOT NULL AND genderratio IS NOT NULL
+""")
+
+boardex = boardex[boardex["annualreportdate"] != "9000-01-01"]
+boardex["annualreportdate"] = pd.to_datetime(boardex["annualreportdate"], errors="coerce")
+boardex["fiscal_year"] = boardex["annualreportdate"].dt.year
+boardex["pct_female_directors"] = 1 - boardex["genderratio"]
+boardex["estimated_num_female_directors"] = (boardex["numberdirectors"] * boardex["pct_female_directors"]).round(2)
+```
+
+## Step 4: Compustat Financials
+
+``` python
+comp = db.raw_sql("""
+    SELECT gvkey, datadate, fyear, at, lt, ceq, act, lct, ni, dltt, pstk, csho, prcc_f
+    FROM comp.funda
+    WHERE datadate >= '2003-01-01'
+      AND indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C'
+""")
+
+comp["tobins_q"] = (comp["prcc_f"] * comp["csho"] + comp["at"] - comp["ceq"]) / comp["at"]
+comp["liquidity_ratio"] = comp["act"] / comp["lct"]
+comp["leverage_ratio"] = comp["dltt"] / comp["at"]
+comp["roa"] = comp["ni"] / comp["at"]
+
+comp_funda = comp[["gvkey", "fyear", "tobins_q", "liquidity_ratio", "leverage_ratio", "roa"]]
+```
+
+## Step 5: Director-Level Diversity Aggregation
+
+``` python
+# Load panel for filtering
+panel = link_table[["companyid"]].drop_duplicates()
+
+print("Loading employment records...")
+employment = db.raw_sql("""
+    SELECT directorid, companyid, datestartrole AS emp_start, dateendrole AS emp_end
+    FROM boardex.na_dir_profile_emp
+    WHERE datestartrole IS NOT NULL
+""")
+
+employment["emp_start"] = pd.to_datetime(employment["emp_start"], errors="coerce")
+employment["emp_end"] = pd.to_datetime(employment["emp_end"], errors="coerce")
+employment["fiscal_year"] = employment["emp_start"].dt.year
+
+filtered_emp = employment.merge(panel, on="companyid", how="inner")
+
+unique_directors = filtered_emp["directorid"].unique().tolist()
+chunksize = 1000
+profile_chunks = []
+
+for i in range(0, len(unique_directors), chunksize):
+    ids_chunk = unique_directors[i:i+chunksize]
+    id_list_str = ",".join([f"'{d}'" for d in ids_chunk])
+    query = f"""
+        SELECT directorid, gender, dob AS dateofbirth
+        FROM boardex.na_dir_profile_details
+        WHERE directorid IN ({id_list_str})
+          AND gender IS NOT NULL AND dob IS NOT NULL
+    """
+    chunk_df = db.raw_sql(query)
+    profile_chunks.append(chunk_df)
+
+profiles = pd.concat(profile_chunks, ignore_index=True)
+profiles["dateofbirth"] = pd.to_datetime(profiles["dateofbirth"], errors="coerce")
+
+print("Computing diversity stats...")
+directors = filtered_emp.merge(profiles, on="directorid", how="inner")
+directors["age_at_start"] = (directors["emp_start"] - directors["dateofbirth"]).dt.days // 365
+
+agg_diversity = (
+    directors.groupby(["companyid", "fiscal_year"])
+    .agg(
+        num_directors=("directorid", "nunique"),
+        pct_female=("gender", lambda x: (x.str.upper() == "FEMALE").mean()),
+        num_female=("gender", lambda x: (x.str.upper() == "FEMALE").sum()),
+        avg_age=("age_at_start", "mean"),
+        stdev_age=("age_at_start", "std"),
+    )
+    .reset_index()
+)
+```
+
+## Step 6: Merge All Data
+
+``` python
+panel = link_table.copy()
+panel = panel.merge(boardex, on=["companyid"], how="left")
+panel = panel.merge(agg_diversity, on=["companyid", "fiscal_year"], how="left")
+panel = panel.merge(comp_funda, left_on=["gvkey", "fiscal_year"], right_on=["gvkey", "fyear"], how="left").drop(columns="fyear")
+```
+
+## Step 7: Output and Save
+
+``` python
+panel.to_csv("sp500_panel_full_with_diversity.csv", index=False)
+print("✅ Final dataset saved: sp500_panel_full_with_diversity.csv")
+db.close()
+```
+
+------------------------------------------------------------------------
+
+## Appendix
+
+::: {.callout-tip title="Data Sources"}
+-   **BoardEx**: `na_board_characteristics`, `na_dir_profile_emp`, `na_dir_profile_details`
+-   **Compustat**: `funda`, `security`
+-   **Link Table**: `wrdsapps_link_crsp_comp_bdx.bdxcrspcomplink`
+-   **Ticker Universe**: Refinitiv tickers via JSON file
+:::
+
+::: {.callout-warning title="Reproducibility Tips"}
+-   Always validate table existence with `db.list_tables('schema')`
+-   Validate available variables using `db.describe_table()` before querying
+-   Use `.drop_duplicates()` and `str.upper()` consistently for key merges
+:::

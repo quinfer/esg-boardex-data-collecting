@@ -1,0 +1,64 @@
+import pandas as pd
+import numpy as np
+
+# Load the datasets
+Bloomberg_unbalanced_2025 = pd.read_excel(r'C:\Users\PC\Desktop\Bloomberg_unbalanced_2025.xlsx', engine='openpyxl')
+Refinitiv_Unbalanced_2025 = pd.read_excel(r'C:\Users\PC\Desktop\Refinitiv_Unbalanced_2025.xlsx', engine='openpyxl')
+
+# Renaming columns in Refinitiv_Unbalanced_2025 to facilitate merging
+Refinitiv_Unbalanced_2025 = Refinitiv_Unbalanced_2025.rename(columns={'Instrument': 'Company', 'Year': 'Year'})
+
+# Standardizing the company names by stripping whitespace and converting to uppercase
+Refinitiv_Unbalanced_2025['Company'] = Refinitiv_Unbalanced_2025['Company'].str.strip().str.upper()
+Bloomberg_unbalanced_2025['Company'] = Bloomberg_unbalanced_2025['Company'].str.strip().str.upper()
+
+# Create a helper function for mapping companies
+def map_company_names(clean_name, companies_data):
+    # Use the first part of the 'clean_name' for matching
+    clean_name_short = clean_name.split(' ')[0]
+    
+    # Use `str.contains` for partial matching, returning the first match
+    matched_company = [company for company in companies_data if clean_name_short in company]
+    
+    # Return the first matched company or None
+    return matched_company[0] if matched_company else None
+
+# Apply the mapping function to each company in Bloomberg_unbalanced_2025
+print("Mapping company names from Bloomberg_unbalanced_2025 to Refinitiv_Unbalanced_2025...")
+Bloomberg_unbalanced_2025['Mapped_Company'] = Bloomberg_unbalanced_2025['Company'].apply(lambda x: map_company_names(x, Refinitiv_Unbalanced_2025['Company'].unique()))
+
+# Print how many mappings were successful and how many failed
+print(f"Number of successful mappings: {Bloomberg_unbalanced_2025['Mapped_Company'].notna().sum()}")
+print(f"Number of failed mappings: {Bloomberg_unbalanced_2025['Mapped_Company'].isna().sum()}")
+
+# Drop rows where no mapping was found (if any)
+Bloomberg_unbalanced_2025_mapped = Bloomberg_unbalanced_2025.dropna(subset=['Mapped_Company'])
+
+# Update the 'Company' column in Bloomberg_unbalanced_2025_mapped with the mapped company names
+Bloomberg_unbalanced_2025_mapped['Company'] = Bloomberg_unbalanced_2025_mapped['Mapped_Company']
+
+# Now merge the datasets on 'Year' and 'Company'
+print("Merging datasets on 'Year' and 'Company'...")
+merged_data2025 = pd.merge(Refinitiv_Unbalanced_2025, Bloomberg_unbalanced_2025_mapped, on=['Year', 'Company'], how='inner')
+
+# 解决重复行：删除 'Company' 和 'Year' 的重复组合
+merged_data2025 = merged_data2025.drop_duplicates(subset=['Company', 'Year'])
+
+# Save the merged dataset to a CSV file
+output_path1 = 'merged_data2025.csv'
+merged_data2025.to_csv(output_path1, index=False)
+
+# Print confirmation and show the first few rows of the merged dataset
+print(f"Merge complete! The merged dataset has been saved to {output_path1}.")
+print(merged_data2025.head())
+
+# Sort the data by 'Company' and 'Year' to ensure sequential order (group by Company, then Year)
+merged_data_sorted2025 = merged_data2025.sort_values(by=['Company', 'Year'])
+
+# Save the merged and sorted dataset to a CSV file on your desktop
+output_path2 = r'C:/Users/PC/Desktop/merged_data2025b.csv'
+merged_data_sorted2025.to_csv(output_path2, index=False)
+
+# Print confirmation and show the first few rows of the merged and sorted dataset
+print(f"Merge complete! The merged and sorted dataset has been saved to {output_path2}.")
+print(merged_data_sorted2025.head())
